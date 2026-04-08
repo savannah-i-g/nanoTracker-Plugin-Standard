@@ -1,0 +1,613 @@
+# nanoTracker Plugin — LLM Reference Guide
+# Version: 1.0  |  Schema: v1  |  Updated: 2026-04-08
+#
+# This file is authoritative context for language models generating nanoTracker plugins.
+# Read it fully before writing any plugin.json or script.js content.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+## OVERVIEW
+
+nanoTracker plugins are ZIP archives with a custom extension:
+
+  .ntins  — Instrument plugin (polyphonic voices, triggered by tracker notes)
+  .ntsfx  — FX plugin (audio effect, slots into FX Mixer channels)
+
+The archive contains:
+  plugin.json   REQUIRED — all configuration, schema, and preset data
+  script.js     OPTIONAL — AudioWorklet processor (runs in audio thread only)
+  samples/      OPTIONAL — WAV or FLAC audio files referenced by plugin.json
+  assets/       OPTIONAL — PNG/SVG graphics
+
+Use build_plugin.py in this directory to package a source folder into an archive.
+
+
+## ARCHITECTURE RULE — CRITICAL
+
+Plugin-specific musical content (presets, pad patterns, pitch sequences, rhythm ideas)
+MUST live inside plugin.json under "loopPresets[]" or the "dsp" block.
+
+NEVER expect the host application source files to be modified for a specific plugin.
+The host is generic. It reads plugin.json dynamically at runtime.
+
+The host only provides:
+  - Generic algorithmic presets (FORWARD, REVERSE — work for any N-pad instrument)
+  - Schema parsing and rendering
+  - UI infrastructure (step grid, FX mixer, parameter controls)
+
+If you find yourself wanting the host code to know about a specific instrument
+(hardcoded pad names, hardcoded preset patterns, instrument-specific UI logic),
+put it in plugin.json instead.
+
+
+## plugin.json — TOP-LEVEL STRUCTURE
+
+{
+  "schemaVersion": 1,          // integer, must be 1
+  "manifest": { ... },         // required
+  "parameters": [ ... ],       // optional, array of PluginParamDef
+  "dsp": { ... },              // required
+  "ui": { ... },               // optional
+  "loopPresets": [ ... ]       // optional, instrument plugins only
+}
+
+
+## MANIFEST
+
+"manifest": {
+  "name":        "My Plugin",       // string, max 64 chars
+  "version":     "1.0.0",           // string, semver recommended
+  "type":        "instrument",      // "instrument" | "fx"
+  "author":      "Author Name",     // string, optional
+  "description": "One-liner"        // string, optional
+}
+
+The host uses name + version to form the plugin ID: "plugin:Name@version"
+This ID is stored in .ftrk save files to reference the plugin.
+
+
+## PARAMETERS
+
+"parameters": [
+  {
+    "key":             "envelope.attack",  // dot-path for instruments, "nodeId.param" for fx
+    "label":           "ATTACK",           // ALL-CAPS display label
+    "min":             0.001,
+    "max":             4.0,
+    "default":         0.01,
+    "step":            0.001,
+    "unit":            "s",               // optional: "s", "Hz", "%", "dB", "ms", ""
+    "displayDecimals": 3                  // optional integer, controls LCD display
+  }
+]
+
+Parameter keys for FX plugins use "nodeId.audioParam" dot-notation.
+  Examples: "wet.gain", "predelay.delayTime", "filter.frequency", "filter.Q"
+
+Parameter keys for instrument plugins use dot-paths that the host resolves
+against the dsp block. Common paths:
+  "envelope.attack"    "envelope.decay"    "envelope.sustain"    "envelope.release"
+  "filter.frequency"   "filter.Q"
+
+Wet/dry parameters should use 0–100 range (host divides by 100 internally).
+Time parameters use seconds as the unit.
+
+
+## INSTRUMENT DSP BLOCK
+
+"dsp": {
+  "processorName": null,         // string | null — AudioWorklet processor name
+  "voices":        16,           // integer 1–32
+  "voiceStealing": "oldest",     // "oldest" | "quietest" | "none"
+
+  "oscillators": [               // optional, mixed before samples
+    { "type": "sawtooth", "detune": -10, "mix": 0.5 },
+    { "type": "sawtooth", "detune":  10, "mix": 0.5 }
+  ],
+
+  "samples": [ ... ],            // see SAMPLE ZONES section
+
+  "envelope": {
+    "attack":  0.005,            // seconds
+    "decay":   0.1,              // seconds
+    "sustain": 0.8,              // 0.0 – 1.0 (amplitude ratio)
+    "release": 0.3               // seconds
+  },
+
+  "filter": {                    // optional, null to omit
+    "type":      "lowpass",      // see FILTER TYPES
+    "frequency": 8000,           // Hz
+    "Q":         1.0
+  }
+}
+
+Oscillator types: "sine" | "square" | "sawtooth" | "triangle" | "noise"
+
+Filter types: "lowpass" | "highpass" | "bandpass" | "notch" | "allpass"
+              "peaking" | "lowshelf" | "highshelf"
+
+When processorName is null, the host uses its built-in polyphonic sample player
+(AudioBufferSourceNode + ADSR gain ramps + BiquadFilterNode). This covers the
+vast majority of instrument plugin needs.
+
+When processorName is set, a script.js must be present. The host registers the
+AudioWorklet and routes note events via MessagePort (see AUDIOWORKLET section).
+
+
+## SAMPLE ZONES
+
+"samples": [
+  {
+    "file":          "samples/kick.wav",    // path within archive
+    "rootKey":       36,                    // MIDI note number (C2 = 36)
+    "keyRange":      { "lo": 24, "hi": 48 },  // MIDI range this zone handles
+    "velocityRange": { "lo":  0, "hi": 127 }, // velocity range
+    "loop":          false,
+    "loopStart":     0.0,                   // seconds into buffer
+    "loopEnd":       0.0,                   // seconds (0 = end of buffer)
+    "startOffset":   0.0,                   // seconds into buffer to begin playback
+    "duration":      0.0                    // seconds to play (0 = play to end)
+  }
+]
+
+startOffset and duration enable non-destructive sample slicing.
+A single audio file can back multiple zones with different offsets.
+
+Example — 32 equal slices from a 4-bar loop at 170 BPM:
+  step_dur = 60 / 170 / 2   // eighth-note duration in seconds
+  zone[i].startOffset = i * step_dur
+  zone[i].duration    = step_dur
+  zone[i].rootKey     = 36 + i
+  zone[i].keyRange    = { lo: 36 + i, hi: 36 + i }
+
+Multiple zones can cover the same MIDI range with different velocityRanges
+for velocity-switching (e.g. soft/medium/hard hits).
+
+The host selects the best-matching zone for each note event based on:
+  1. keyRange contains the note
+  2. velocityRange contains the velocity
+  3. If multiple zones match, first one wins
+
+
+## FX DSP BLOCK
+
+"dsp": {
+  "processorName": null,         // string | null
+  "nodes": [
+    { "id": "predelay", "type": "delay",    "maxDelay": 0.5, "delayTime": 0.02 },
+    { "id": "verb",     "type": "convolver","impulse": "samples/hall.wav", "normalize": true },
+    { "id": "wet",      "type": "gain",     "gain": 0.3 },
+    { "id": "dry",      "type": "gain",     "gain": 1.0 }
+  ],
+  "connections": [
+    { "from": "input",    "to": "predelay" },
+    { "from": "input",    "to": "dry"      },
+    { "from": "predelay", "to": "verb"     },
+    { "from": "verb",     "to": "wet"      },
+    { "from": "wet",      "to": "output"   },
+    { "from": "dry",      "to": "output"   }
+  ]
+}
+
+Reserved IDs: "input" and "output" — these are GainNode stubs created by the host.
+Do NOT define nodes with these IDs.
+
+FX Node Types and their settable fields:
+
+  gain        gain
+  delay       delayTime, maxDelay
+  biquad      frequency, Q, gain, filterType (string: Web Audio BiquadFilterNode type)
+  compressor  threshold, ratio, attack, release, knee
+  convolver   impulse (file path in archive), normalize (boolean)
+  panner      pan (-1.0 to 1.0)
+  waveshaper  curve ("sigmoid" | "clip" | "fold"), drive
+  worklet     (processor-defined AudioParams from parameterDescriptors)
+
+Parameter keys in "parameters[]" for FX plugins must be "nodeId.audioParam":
+  "wet.gain"           → nodes.find(n => n.id === "wet") → GainNode.gain
+  "predelay.delayTime" → DelayNode.delayTime
+  "filter.frequency"   → BiquadFilterNode.frequency
+  "filter.Q"           → BiquadFilterNode.Q
+  "comp.threshold"     → DynamicsCompressorNode.threshold
+
+
+## LOOP PRESETS (instrument plugins only)
+
+loopPresets define named step sequences that appear as one-click preset buttons
+in the tracker's loop generator UI. All creative content for a specific instrument
+MUST be here — never in host source code.
+
+"loopPresets": [
+  {
+    "name": "CLASSIC",           // max ~12 chars for clean display
+    "steps": [
+      {
+        "padIndex": 1,           // 1-based zone index (1 = zone[0]). 0 = silent step
+        "pitch":    0,           // semitone offset, default 0
+        "volume":   100,         // 0–100, default 100
+        "reverse":  false,       // play sample reversed, default false
+        "active":   true         // false = mute this step, default true
+      },
+      { "padIndex": 0 },         // silent step (minimal form)
+      { "padIndex": 3, "volume": 75 }
+    ]
+  },
+  {
+    "name": "BREAKCORE",
+    "steps": [ ... ]
+  }
+]
+
+Steps array length determines the preset pattern length. Common lengths: 8, 16, 32.
+The host renders each step at the current BPM, one step per subdivision.
+Shorter step arrays loop within the current pattern length.
+
+
+## UI BLOCK
+
+"ui": {
+  "layout": "grid",             // "grid" | "flex"
+  "controls": [
+    { "type": "knob",          "parameter": "envelope.attack",  "label": "ATTACK"  },
+    { "type": "slider",        "parameter": "filter.frequency", "label": "CUTOFF"  },
+    { "type": "toggle",        "parameter": "filter.enabled",   "label": "FILT"    },
+    { "type": "number",        "parameter": "voices",           "label": "VOICES"  },
+    { "type": "waveform_view", "sampleIndex": 0,                "label": "WAVE"    }
+  ]
+}
+
+Control types:
+  knob          Rotary dial (270° sweep). Best for continuous params.
+  slider        Vertical or horizontal fader.
+  toggle        ON/OFF button.
+  select        Dropdown for discrete values.
+  number        LCD click-to-edit numeric field.
+  waveform_view Canvas waveform display. Requires "sampleIndex" (integer, 0-based zone index).
+
+All numeric values displayed using the tracker's LCD ghost-digit style automatically.
+Labels should be ALL-CAPS, ≤8 chars for best display.
+
+
+## AUDIOWORKLET — script.js
+
+Only needed for custom DSP that cannot be expressed as a declarative node graph.
+Most plugins do NOT need script.js.
+
+Security: script.js runs exclusively in the AudioWorklet scope (audio rendering thread).
+No DOM, no fetch, no XMLHttpRequest. The host never eval()s it.
+
+### FX Processor (script.js)
+
+class MyFxProcessor extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [
+      { name: "drive", defaultValue: 0.5, minValue: 0, maxValue: 1, automationRate: "k-rate" }
+    ];
+  }
+
+  process(inputs, outputs, parameters) {
+    const input  = inputs[0];
+    const output = outputs[0];
+    const drive  = parameters.drive[0];
+    for (let ch = 0; ch < output.length; ch++) {
+      const inp = input[ch] ?? new Float32Array(128);
+      const out = output[ch];
+      for (let i = 0; i < out.length; i++) {
+        out[i] = Math.tanh(inp[i] * (1 + drive * 10));
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("my-fx-processor", MyFxProcessor);
+
+The processorName in plugin.json must exactly match the string in registerProcessor().
+
+
+### Instrument Processor (script.js)
+
+Instrument processors receive note events via MessagePort. The host does NOT send
+raw MIDI — it sends structured JS objects.
+
+class MySynthProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._voices = [];
+    this.port.onmessage = ({ data }) => {
+      if (data.type === "noteOn") {
+        // data: { type, note, velocity, frequency }
+        this._voices.push({ freq: data.frequency, vel: data.velocity / 127, phase: 0 });
+      } else if (data.type === "noteOff") {
+        // data: { type, note }
+        this._voices = this._voices.filter(v => v.note !== data.note);
+      } else if (data.type === "allNotesOff") {
+        this._voices = [];
+      } else if (data.type === "param") {
+        // data: { type, key, value }
+        this._applyParam(data.key, data.value);
+      }
+    };
+  }
+
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    if (!out) return true;
+    for (let i = 0; i < out.length; i++) {
+      let s = 0;
+      for (const v of this._voices) {
+        s += Math.sin(2 * Math.PI * v.freq * v.phase / sampleRate) * v.vel;
+        v.phase++;
+      }
+      out[i] = s / Math.max(1, this._voices.length);
+    }
+    return true;
+  }
+}
+registerProcessor("my-synth-processor", MySynthProcessor);
+
+
+### Message Protocol (Host → Processor)
+
+Type          Payload
+noteOn        { type: "noteOn",     note: int, velocity: int, frequency: float }
+noteOff       { type: "noteOff",    note: int }
+allNotesOff   { type: "allNotesOff" }
+param         { type: "param",      key: string, value: number }
+
+frequency is already converted from MIDI note number by the host. Use it directly
+for oscillator frequencies. The conversion is:
+  frequency = 440 * 2^((note - 69) / 12)
+
+
+## COMPLETE EXAMPLE — INSTRUMENT (.ntins)
+
+A chromatic sample player with one WAV file:
+
+plugin.json:
+{
+  "schemaVersion": 1,
+  "manifest": {
+    "name": "Chromatic Keys",
+    "version": "1.0.0",
+    "type": "instrument",
+    "author": "Your Name",
+    "description": "Simple chromatic sample player"
+  },
+  "dsp": {
+    "processorName": null,
+    "voices": 16,
+    "voiceStealing": "oldest",
+    "oscillators": [],
+    "samples": [
+      {
+        "file": "samples/piano_c4.wav",
+        "rootKey": 60,
+        "keyRange":      { "lo": 0,   "hi": 127 },
+        "velocityRange": { "lo": 0,   "hi": 127 },
+        "loop": false,
+        "loopStart": 0.0,
+        "loopEnd": 0.0,
+        "startOffset": 0.0,
+        "duration": 0.0
+      }
+    ],
+    "envelope": { "attack": 0.005, "decay": 0.1, "sustain": 0.9, "release": 0.5 },
+    "filter": { "type": "lowpass", "frequency": 12000, "Q": 1.0 }
+  },
+  "parameters": [
+    { "key": "envelope.attack",    "label": "ATK",    "min": 0.001, "max": 4.0,   "default": 0.005, "step": 0.001, "unit": "s",  "displayDecimals": 3 },
+    { "key": "envelope.release",   "label": "REL",    "min": 0.001, "max": 4.0,   "default": 0.5,   "step": 0.001, "unit": "s",  "displayDecimals": 3 },
+    { "key": "filter.frequency",   "label": "CUTOFF", "min": 20,    "max": 20000, "default": 12000, "step": 10,    "unit": "Hz", "displayDecimals": 0 },
+    { "key": "filter.Q",           "label": "RESO",   "min": 0.1,   "max": 20.0,  "default": 1.0,   "step": 0.1,   "unit": "",   "displayDecimals": 1 }
+  ],
+  "ui": {
+    "layout": "grid",
+    "controls": [
+      { "type": "knob",          "parameter": "envelope.attack",  "label": "ATK"    },
+      { "type": "knob",          "parameter": "envelope.release", "label": "REL"    },
+      { "type": "knob",          "parameter": "filter.frequency", "label": "CUTOFF" },
+      { "type": "knob",          "parameter": "filter.Q",         "label": "RESO"   },
+      { "type": "waveform_view", "sampleIndex": 0,                "label": "WAVE"   }
+    ]
+  }
+}
+
+Archive structure:
+  plugin.json
+  samples/piano_c4.wav
+
+
+## COMPLETE EXAMPLE — DRUM SLICER (.ntins)
+
+32 equal slices from a single loop file at 170 BPM.
+
+Slice duration (eighth note at 170 BPM) = 60 / 170 / 2 ≈ 0.17647 seconds
+
+"samples": [
+  { "file": "samples/loop.wav", "rootKey": 36, "keyRange": { "lo": 36, "hi": 36 }, "velocityRange": { "lo": 0, "hi": 127 }, "loop": false, "loopStart": 0, "loopEnd": 0, "startOffset": 0.00000, "duration": 0.17647 },
+  { "file": "samples/loop.wav", "rootKey": 37, "keyRange": { "lo": 37, "hi": 37 }, "velocityRange": { "lo": 0, "hi": 127 }, "loop": false, "loopStart": 0, "loopEnd": 0, "startOffset": 0.17647, "duration": 0.17647 },
+  { "file": "samples/loop.wav", "rootKey": 38, "keyRange": { "lo": 38, "hi": 38 }, "velocityRange": { "lo": 0, "hi": 127 }, "loop": false, "loopStart": 0, "loopEnd": 0, "startOffset": 0.35294, "duration": 0.17647 }
+  // ... continue for all 32 slices
+]
+
+With loopPresets to define creative patterns over the 32 zones:
+
+"loopPresets": [
+  {
+    "name": "STRAIGHT",
+    "steps": [
+      { "padIndex": 1 }, { "padIndex": 3 }, { "padIndex": 5 }, { "padIndex": 7 },
+      { "padIndex": 2 }, { "padIndex": 4 }, { "padIndex": 6 }, { "padIndex": 8 }
+    ]
+  },
+  {
+    "name": "REVERSE",
+    "steps": [
+      { "padIndex": 8, "reverse": true }, { "padIndex": 6, "reverse": true },
+      { "padIndex": 4, "reverse": true }, { "padIndex": 2, "reverse": true }
+    ]
+  },
+  {
+    "name": "STUTTER",
+    "steps": [
+      { "padIndex": 1 }, { "padIndex": 1, "volume": 60 },
+      { "padIndex": 1 }, { "padIndex": 1, "volume": 30 },
+      { "padIndex": 3 }, { "padIndex": 3, "volume": 60 },
+      { "padIndex": 5 }, { "padIndex": 5, "volume": 80 }
+    ]
+  }
+]
+
+
+## COMPLETE EXAMPLE — FX PLUGIN (.ntsfx)
+
+Stereo chorus effect using built-in node types (no script.js required):
+
+{
+  "schemaVersion": 1,
+  "manifest": {
+    "name": "Chorus",
+    "version": "1.0.0",
+    "type": "fx",
+    "author": "Your Name",
+    "description": "Stereo chorus / flanger"
+  },
+  "dsp": {
+    "processorName": null,
+    "nodes": [
+      { "id": "dry",    "type": "gain",  "gain": 1.0 },
+      { "id": "wetL",   "type": "gain",  "gain": 0.3 },
+      { "id": "wetR",   "type": "gain",  "gain": 0.3 },
+      { "id": "dlyL",   "type": "delay", "maxDelay": 0.05, "delayTime": 0.015 },
+      { "id": "dlyR",   "type": "delay", "maxDelay": 0.05, "delayTime": 0.022 },
+      { "id": "output", "type": "gain",  "gain": 1.0 }
+    ],
+    "connections": [
+      { "from": "input", "to": "dry"  },
+      { "from": "input", "to": "dlyL" },
+      { "from": "input", "to": "dlyR" },
+      { "from": "dlyL",  "to": "wetL" },
+      { "from": "dlyR",  "to": "wetR" },
+      { "from": "dry",   "to": "output" },
+      { "from": "wetL",  "to": "output" },
+      { "from": "wetR",  "to": "output" }
+    ]
+  },
+  "parameters": [
+    { "key": "wetL.gain", "label": "WET",    "min": 0, "max": 100, "default": 30, "step": 1, "unit": "%", "displayDecimals": 0 },
+    { "key": "dry.gain",  "label": "DRY",    "min": 0, "max": 100, "default": 100,"step": 1, "unit": "%", "displayDecimals": 0 }
+  ],
+  "ui": {
+    "layout": "flex",
+    "controls": [
+      { "type": "knob", "parameter": "wetL.gain", "label": "WET" },
+      { "type": "knob", "parameter": "dry.gain",  "label": "DRY" }
+    ]
+  }
+}
+
+
+## BUILD TOOL USAGE
+
+From this directory:
+
+  python build_plugin.py ./my-plugin-source
+    → reads my-plugin-source/plugin.json
+    → validates all fields
+    → packages into my-plugin-source/../my-plugin-source.ntins (or .ntsfx)
+
+  python build_plugin.py ./my-plugin-source --out ./dist
+    → writes archive to dist/
+
+  python build_plugin.py ./my-plugin-source --name "PluginName_1.0.0"
+    → overrides output filename stem
+
+The builder validates:
+  - schemaVersion is supported (currently: 1)
+  - manifest has name, version, type
+  - All parameters have min < max, default within range
+  - Sample file paths exist in the source directory
+  - FX connections reference valid node IDs
+  - loopPresets steps have valid padIndex and volume values
+  - processorName / script.js consistency
+
+Warnings (non-fatal):
+  - Default value outside [min, max] range
+  - Sample file path not found (might be intentional for generated content)
+  - processorName set but no script.js found
+  - script.js present but processorName is null
+
+
+## COMMON MISTAKES
+
+1. Hardcoding plugin logic in the host
+   WRONG: Expecting host code to special-case your plugin by name
+   RIGHT: Put all creative content in plugin.json loopPresets[]
+
+2. processorName mismatch
+   WRONG: processorName: "my-synth" but script.js calls registerProcessor("MySynth", ...)
+   RIGHT: The strings must be identical
+
+3. Connections using undefined node IDs
+   WRONG: { "from": "reverb", "to": "output" } when no node has id "reverb"
+   RIGHT: Every id in connections must appear in nodes[], or be "input"/"output"
+
+4. Sample file paths wrong
+   WRONG: "file": "kick.wav" when the file is at samples/kick.wav in the archive
+   RIGHT: "file": "samples/kick.wav" — paths are relative to archive root
+
+5. sustain out of range
+   WRONG: "sustain": 80   (host expects 0.0–1.0)
+   RIGHT: "sustain": 0.8
+
+6. padIndex 0-based vs 1-based
+   loopPresets padIndex is 1-BASED. 0 = silent step. 1 = first sample zone.
+   WRONG: { "padIndex": 0 } to mean the first zone
+   RIGHT: { "padIndex": 1 } for zone[0], { "padIndex": 0 } for silence
+
+7. Missing "input"/"output" connections
+   Every FX plugin must have at least one connection from "input" and at least
+   one connection to "output", otherwise no audio will pass through.
+
+
+## MIDI NOTE REFERENCE
+
+Octave  C    C#   D    D#   E    F    F#   G    G#   A    A#   B
+  0     0    1    2    3    4    5    6    7    8    9    10   11
+  1     12   13   14   15   16   17   18   19   20   21   22   23
+  2     24   25   26   27   28   29   30   31   32   33   34   35
+  3     36   37   38   39   40   41   42   43   44   45   46   47  ← C3=36
+  4     48   49   50   51   52   53   54   55   56   57   58   59
+  5     60   61   62   63   64   65   66   67   68   69   70   71  ← A4=69 (440 Hz)
+  6     72   73   74   75   76   77   78   79   80   81   82   83
+  7     84   85   86   87   88   89   90   91   92   93   94   95
+  8     96   97   98   99  100  101  102  103  104  105  106  107
+
+Standard drum mapping (General MIDI):
+  36 = Bass Drum 1 (C2)
+  38 = Snare (D2)
+  42 = Closed Hi-Hat (F#2)
+  46 = Open Hi-Hat (A#2)
+  49 = Crash Cymbal (C#3)
+  51 = Ride Cymbal (D#3)
+
+
+## TEMPO REFERENCE
+
+Common slice durations (seconds):
+
+BPM     Quarter     Eighth      Sixteenth   Thirty-second
+80      0.75000     0.37500     0.18750     0.09375
+100     0.60000     0.30000     0.15000     0.07500
+120     0.50000     0.25000     0.12500     0.06250
+140     0.42857     0.21429     0.10714     0.05357
+160     0.37500     0.18750     0.09375     0.04688
+170     0.35294     0.17647     0.08824     0.04412
+174     0.34483     0.17241     0.08621     0.04310
+180     0.33333     0.16667     0.08333     0.04167
+200     0.30000     0.15000     0.07500     0.03750
+
+Formula: duration = 60 / BPM / subdivisions_per_beat
+  Quarter note: subdivisions_per_beat = 1
+  Eighth note:  subdivisions_per_beat = 2
+  Sixteenth:    subdivisions_per_beat = 4
