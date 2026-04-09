@@ -77,16 +77,19 @@ Every plugin begins with the same top-level envelope:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "manifest": { },
   "parameters": [ ],
   "dsp": { },
   "ui": { },
-  "loopPresets": [ ]
+  "loopPresets": [ ],
+  "presets": [ ]
 }
 ```
 
-`loopPresets` is for instrument plugins only. `parameters` and `ui` are optional but recommended.
+`loopPresets` is for instrument plugins only. `parameters`, `ui`, and `presets` are optional but recommended.
+
+**Schema versions:** Both `1` and `2` are supported. All v2 fields are optional — a schema v1 plugin loads identically in a v2 host. Set `"schemaVersion": 2` to use new features (modulation, expanded node types, presets, etc.).
 
 ---
 
@@ -142,6 +145,8 @@ Parameters are the interface between the tracker's automation system and your pl
 | `step` | Yes | Increment for dragging/scrolling. |
 | `unit` | No | `"s"`, `"Hz"`, `"%"`, `"dB"`, `"ms"`, or `""`. |
 | `displayDecimals` | No | Integer. Controls LCD digit precision. |
+| `group` | No | **v2.** UI grouping category string (e.g. `"FILTER"`, `"ENVELOPE"`). |
+| `curve` | No | **v2.** Value mapping: `"linear"` (default), `"exponential"`, or `"logarithmic"`. Exponential bunches values toward the bottom (good for frequency); logarithmic bunches toward the top. |
 
 **Convention:** Wet/dry parameters use the `0–100` range (the host divides by 100 internally before setting the `AudioParam`). Time parameters always use seconds.
 
@@ -165,11 +170,44 @@ Parameters are the interface between the tracker's automation system and your pl
 | `knob` | Continuous params | 270° rotary dial. |
 | `slider` | Continuous params | Vertical or horizontal fader. |
 | `toggle` | Boolean params | ON/OFF button. |
-| `select` | Discrete enum values | Dropdown. |
+| `select` | Discrete enum values | Dropdown. Requires `"options": ["A", "B", "C"]`. |
 | `number` | Precise numeric entry | LCD click-to-edit field. |
-| `waveform_view` | Sample preview | Requires `"sampleIndex"` (0-based zone index). |
+| `waveform_view` | Sample/analyser preview | Use `"sampleIndex"` (static) or `"analyserNode"` (live). |
+| `xy_pad` | **v2.** 2D control | Requires `"parameterX"` and `"parameterY"`. |
+| `envelope_editor` | **v2.** ADSR visual | Draggable breakpoints. Set `"parameter": "envelope"` for the prefix group. |
+| `meter` | **v2.** Level meter | Requires `"analyserNode"` (ID of an analyser DSP node). |
+| `label` | **v2.** Static text | Display-only. Set `"label": "YOUR TEXT"`. |
+| `group` | **v2.** Container | Nests `"children": [...]` with `"style": "row"` or `"column"`. |
 
 `layout` is either `"grid"` (even columns) or `"flex"` (left-to-right wrap).
+
+#### v2 UI-level fields
+
+```json
+"ui": {
+  "layout": "flex",
+  "accentColor": "#ff6600",
+  "minWidth": 300,
+  "minHeight": 200,
+  "controls": [ ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `accentColor` | **v2.** CSS colour for plugin accent theming (knob highlights, waveform colour). |
+| `minWidth` / `minHeight` | **v2.** Pixel hints for the plugin UI panel. |
+
+#### v2 control fields
+
+| Field | Applies to | Notes |
+|---|---|---|
+| `options` | `select` | Array of option label strings. Parameter value = selected index. |
+| `parameterX` / `parameterY` | `xy_pad` | Parameter keys for X and Y axes. |
+| `analyserNode` | `waveform_view`, `meter` | ID of an `analyser` node in the DSP graph. |
+| `children` | `group` | Nested array of controls. |
+| `style` | `group` | `"row"` or `"column"` flex direction. |
+| `width` / `height` | `waveform_view`, `xy_pad`, `meter`, `envelope_editor` | Pixel size hints. |
 
 All numeric displays automatically use nanoTracker's LCD ghost-digit style.
 
@@ -210,12 +248,55 @@ All numeric displays automatically use nanoTracker's LCD ghost-digit style.
 | `samples` | `array` | Sample zones. See [Sample Zones](#sample-zones). |
 | `envelope` | `object` | ADSR applied to every voice. `sustain` is `0.0–1.0`. |
 | `filter` | `object \| null` | One-pole filter post-oscillator. `null` to disable. |
+| `filters` | **v2.** `array` | Additional filter stages chained in series after `filter`. |
+| `envelopes` | **v2.** `array` | Named multi-stage envelopes (beyond the main ADSR). |
+| `lfos` | **v2.** `array` | Per-voice LFOs for modulation. |
+| `modRoutes` | **v2.** `array` | Modulation routing (same format as FX `modRoutes`). |
+| `unison` | **v2.** `object` | `{ "count": 7, "detune": 30, "stereoSpread": 0.8 }`. 1-8 sub-voices. |
+| `portamento` | **v2.** `object` | `{ "time": 0.06, "mode": "legato" }`. `"always"` or `"legato"`. |
+| `noiseType` | **v2.** `string` | `"white"`, `"pink"`, or `"brown"` noise generator. |
 
 **Oscillator types:** `sine`, `square`, `sawtooth`, `triangle`, `noise`
 
+**v2 oscillator fields:** `fmTarget` (index of target oscillator for FM synthesis), `fmDepth` (modulation depth in Hz).
+
 **Filter types:** `lowpass`, `highpass`, `bandpass`, `notch`, `allpass`, `peaking`, `lowshelf`, `highshelf`
 
+**v2 LFO definition:**
+```json
+{ "id": "lfo1", "shape": "sine", "rate": 5, "depth": 200 }
+```
+
+**v2 Envelope definition:**
+```json
+{ "id": "filterEnv", "stages": [{ "target": 1, "time": 0.01 }, { "target": 0.3, "time": 0.2 }], "loop": false }
+```
+
+**v2 Modulation route (instruments):** Same format as FX. Built-in sources: `"velocity"`, `"note"`.
+```json
+{ "source": "lfo1", "target": "filter.frequency", "depth": 500 }
+{ "source": "velocity", "target": "filter.frequency", "depth": 2000 }
+```
+
 When `processorName` is `null`, the host's built-in polyphonic scheduler handles note events using `AudioBufferSourceNode` with ADSR gain ramps. This covers most use cases. Only add a `script.js` when you need custom DSP that can't be expressed declaratively.
+
+#### v2 Tracker Integration
+
+Plugin instruments are a first-class tracker concept. When assigned to an instrument slot via the **INS** panel, they respond to all tracker note and effect commands:
+
+| Effect | Plugin Behavior |
+|---|---|
+| 0xx Arpeggio | Rapid pitch changes via `setPitch` (no envelope re-trigger) |
+| 1xx/2xx Portamento | Smooth pitch glide via `setPitch` |
+| 3xx Tone porta | Pitch glide to target note |
+| 4xx Vibrato | Periodic pitch modulation |
+| 7xx Tremolo | Periodic volume modulation |
+| Cxx Set volume | Direct gain change |
+| E9x Retrigger | `noteOff` + `noteOn` |
+
+Worklet processors receive two additional message types:
+- `{ type: "setPitch", frequency: Hz, time: audioTime }` — pitch control from effect commands
+- `{ type: "setGain", gain: 0-1, time: audioTime }` — volume control from effect commands
 
 ---
 
@@ -343,6 +424,62 @@ FX plugins describe a **declarative Web Audio graph** — a list of nodes and di
 | `panner` | `StereoPannerNode` | `pan` (`-1.0` to `1.0`) |
 | `waveshaper` | `WaveShaperNode` | `curve` (`"sigmoid"`, `"clip"`, `"fold"`), `drive` |
 | `worklet` | `AudioWorkletNode` | Processor-defined, via `script.js` |
+| `mixer` | **v2.** `GainNode` (unity) | `gain`. Summing bus — Web Audio sums all connected inputs. |
+| `splitter` | **v2.** `ChannelSplitterNode` | `channelCount` (default 2). Stereo → individual mono channels. |
+| `merger` | **v2.** `ChannelMergerNode` | `channelCount` (default 2). Mono channels → stereo. |
+| `oscillator` | **v2.** `OscillatorNode` | `oscType`, `oscFrequency`. Audio-rate oscillator (FM synthesis in FX). |
+| `constant` | **v2.** `ConstantSourceNode` | `gain` (offset value). DC offset / modulation bias. |
+| `analyser` | **v2.** `AnalyserNode` | `fftSize` (default 256). Pass-through with FFT data for UI visualisation. |
+| `lfo` | **v2.** `OscillatorNode` + `GainNode` | `lfoShape`, `lfoRate`, `lfoDepth`. Modulation source. |
+| `envelope` | **v2.** `ConstantSourceNode` | `envStages[]`. Scheduled ADSR ramps, triggered by note events. |
+
+**v2 LFO shapes:** `"sine"`, `"triangle"`, `"square"`, `"sawtooth"`, `"sample-and-hold"`
+
+**v2 Envelope stages:** `[{ "target": 1.0, "time": 0.01, "curve": "linear" }, { "target": 0.5, "time": 0.2 }, ...]`
+
+#### v2 Connection Fields
+
+Connections support additional fields for modulation and channel routing:
+
+```json
+{
+  "from": "lfo1",
+  "to": "filter1",
+  "toParam": "frequency",
+  "outputIndex": 0,
+  "inputIndex": 0
+}
+```
+
+| Field | Notes |
+|---|---|
+| `toParam` | **v2.** Connect to an `AudioParam` on the destination node instead of its audio input. E.g. `"frequency"`, `"gain"`, `"delayTime"`. |
+| `outputIndex` | **v2.** For `splitter` nodes: which output channel (0-based). |
+| `inputIndex` | **v2.** For `merger` nodes: which input channel (0-based). |
+
+This enables **AudioParam modulation**: an LFO node's output connected via `toParam: "frequency"` will modulate the filter's cutoff in real-time, using Web Audio's native additive AudioParam modulation.
+
+#### v2 Modulation Routes
+
+An alternative to explicit `toParam` connections. Modulation routes insert a depth-scaling GainNode automatically:
+
+```json
+"modRoutes": [
+  {
+    "source": "lfo1",
+    "target": "filter1.frequency",
+    "depth": 500,
+    "bipolar": true
+  }
+]
+```
+
+| Field | Notes |
+|---|---|
+| `source` | Node ID of the modulation source (`"lfo1"`, `"env2"`). |
+| `target` | `"nodeId.paramName"` dot-path to the target AudioParam. |
+| `depth` | Scaling factor (gain value of the intermediary GainNode). |
+| `bipolar` | `true` for LFO (oscillates ±depth), `false` for envelope (0 to +depth). Default varies. |
 
 #### FX Parameter Keys
 
@@ -438,6 +575,44 @@ registerProcessor("my-synth", MySynth);
 | `noteOff` | `{ note }` | Begin release for the matching voice. |
 | `allNotesOff` | `{}` | Immediate silence (sent on tracker stop/reset). |
 | `param` | `{ key, value }` | Live parameter update. |
+| `setPitch` | **v2.** `{ frequency, time }` | Glide to new frequency. Sent by portamento/vibrato/arpeggio. |
+| `setGain` | **v2.** `{ gain, time }` | Set output level (0-1). Sent by volume commands/tremolo. |
+
+---
+
+## Factory Presets (v2)
+
+Presets define named snapshots of parameter values. A dropdown appears at the top of the plugin UI when presets are present.
+
+```json
+"presets": [
+  {
+    "name": "CLASSIC",
+    "values": {
+      "cutoff": 800,
+      "resonance": 12,
+      "envMod": 5000,
+      "decay": 0.2
+    }
+  },
+  {
+    "name": "DEEP BASS",
+    "values": {
+      "cutoff": 300,
+      "resonance": 5,
+      "envMod": 1000,
+      "decay": 0.5
+    }
+  }
+]
+```
+
+| Field | Notes |
+|---|---|
+| `name` | Display name in the preset dropdown. |
+| `values` | `Record<string, number>` — maps parameter keys to their values. Only keys present are changed; others retain their current values. |
+
+Presets are applied client-side by iterating `values` and calling the host's `onChange` for each parameter. They are not serialised in `.ftrk` files — the individual parameter values are saved instead.
 
 ---
 
@@ -451,7 +626,7 @@ python3 build_plugin.py PLUGIN_DIR [--out OUTPUT_DIR] [--name FILENAME_STEM]
 
 | Check | Fatal? |
 |---|---|
-| `schemaVersion` is supported (currently: `1`) | Yes |
+| `schemaVersion` is supported (`1` or `2`) | Yes |
 | `manifest` has `name`, `version`, `type` | Yes |
 | `manifest.type` is `"instrument"` or `"fx"` | Yes |
 | All parameters have `min < max` | Yes |

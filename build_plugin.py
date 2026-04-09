@@ -20,7 +20,7 @@ from pathlib import Path
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
-SUPPORTED_SCHEMA_VERSIONS = {1}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 VALID_TYPES = {"instrument", "fx"}
 VALID_VOICE_STEALING = {"oldest", "quietest", "none"}
 VALID_OSC_TYPES = {"sine", "square", "sawtooth", "triangle", "noise"}
