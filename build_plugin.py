@@ -27,10 +27,17 @@ VALID_OSC_TYPES = {"sine", "square", "sawtooth", "triangle", "noise"}
 VALID_FX_NODE_TYPES = {
     "gain", "delay", "biquad", "compressor", "convolver",
     "panner", "waveshaper", "worklet",
+    # v2 additions
+    "mixer", "splitter", "merger", "oscillator", "constant",
+    "analyser", "lfo", "envelope",
 }
 VALID_CURVE_TYPES = {"sigmoid", "clip", "fold"}
 VALID_FILTER_TYPES = {"lowpass", "highpass", "bandpass", "notch", "allpass", "peaking", "lowshelf", "highshelf"}
-VALID_CONTROL_TYPES = {"knob", "slider", "toggle", "select", "number", "waveform_view"}
+VALID_CONTROL_TYPES = {
+    "knob", "slider", "toggle", "select", "number", "waveform_view",
+    # v2 additions
+    "xy_pad", "envelope_editor", "meter", "label", "group",
+}
 
 # Files to exclude from the archive
 EXCLUDE_PATTERNS = {
