@@ -1,3 +1,12 @@
+> [!WARNING]                                                                                                                                                                          
+> ## This repository is deprecated                                                                                                                                                    
+>
+> Development has moved to **[nanoTracker-sdk](https://github.com/savannah-i-g/nanoTracker-sdk)**.                                                                                    
+>                                                                                                                                                                                     
+> This repo is retained for historical reference and is no longer
+> maintained. Please file new issues, PRs, and discussions against                                                                                                                    
+> the new repository.     
+
 # nanoTracker Plugin Builder
 
 A zero-dependency command-line tool for packaging [nanoTracker](https://federated.industries/tracker) plugins. Point it at a source directory, and it validates your `plugin.json` and bundles everything into a ready-to-load archive.
